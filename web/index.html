@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Skill 分类管理器</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">⚡</span>
+      <div class="brand-text">
+        <div class="brand-title">Skill 分类管理器</div>
+        <div class="brand-sub">按科研工作流分类 · 管理 7 个 AI Agent 的 skill 启用状态</div>
+      </div>
+    </div>
+    <div class="toolbar">
+      <button id="btn-scan" class="btn btn-ghost">↻ 扫描更新</button>
+      <button id="btn-newcat" class="btn btn-ghost">＋ 新建类别</button>
+      <button id="btn-ai" class="btn btn-accent">✨ AI 智能分类</button>
+      <button id="btn-paths" class="btn btn-ghost">路径诊断</button>
+      <span class="spacer"></span>
+      <button id="btn-all-on" class="btn btn-ghost">全部开启</button>
+      <button id="btn-all-off" class="btn btn-ghost">全部关闭</button>
+      <button id="btn-reset" class="btn btn-ghost">放弃修改</button>
+      <button id="btn-apply" class="btn btn-primary">应用修改</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar">
+      <div class="side-head">
+        <span>分 类</span>
+        <span id="dirty-badge" class="dirty-badge hidden">●</span>
+      </div>
+      <nav id="cat-list" class="cat-list"></nav>
+      <div class="side-foot">
+        <button id="btn-newcat2" class="btn btn-ghost full">＋ 新建类别</button>
+      </div>
+    </aside>
+
+    <section class="content">
+      <div class="content-head">
+        <div class="content-title">
+          <h2 id="cat-title">—</h2>
+          <p id="cat-sub"></p>
+        </div>
+        <div class="cat-toggles" id="cat-toggles"></div>
+      </div>
+      <div class="skill-list" id="skill-list"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+
+  <div id="modal" class="modal-mask hidden">
+    <div class="modal">
+      <div class="modal-head">
+        <span id="modal-title">路径诊断</span>
+        <button id="modal-close" class="modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <pre id="modal-body" class="paths-text"></pre>
+      </div>
+      <div class="modal-foot">
+        <button id="modal-refresh" class="btn btn-ghost">重新探测</button>
+        <button id="modal-ok" class="btn btn-primary">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="ai-modal" class="modal-mask hidden">
+    <div class="modal ai-modal">
+      <div class="modal-head">
+        <span>✨ AI 智能分类</span>
+        <button id="ai-close" class="modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="ai-config" id="ai-config"></div>
+        <div class="ai-row">
+          <div class="ai-col">
+            <label class="ai-label">模型</label>
+            <select id="ai-model" class="ai-model"></select>
+          </div>
+        </div>
+        <label class="ai-label">分类范围</label>
+        <div class="ai-scope" id="ai-scope">
+          <label class="radio"><input type="radio" name="ai-scope" value="uncategorized" checked> 仅「未分类」</label>
+          <label class="radio"><input type="radio" name="ai-scope" value="all"> 全部 skill</label>
+          <label class="radio"><input type="radio" name="ai-scope" value="current"> 当前分类</label>
+          <label class="radio"><input type="radio" name="ai-scope" value="selected"> 指定分类</label>
+        </div>
+        <div id="ai-cat-picker" class="ai-cat-picker hidden"></div>
+        <label class="ai-label">想怎么分（可选，一句话说明你的分类意图）</label>
+        <textarea id="ai-instruction" class="ai-instruction" rows="2"
+          placeholder="例如：按半导体器件仿真流程分，把 TCAD、EDA、材料参数相关的各自归一类"></textarea>
+        <div id="ai-result" class="ai-result hidden"></div>
+      </div>
+      <div class="modal-foot">
+        <button id="ai-run" class="btn btn-primary">开始分类</button>
+        <button id="ai-apply" class="btn btn-accent hidden">确认应用</button>
+        <button id="ai-cancel" class="btn btn-ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

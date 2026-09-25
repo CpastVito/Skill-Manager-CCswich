@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 临时文件
+*.tmp
+*.testbak
+*.verifybak
+categories.json.testbak
+
+# IDE / 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 项目内部状态（WorkBuddy）
+.workbuddy/
