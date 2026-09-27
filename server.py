@@ -10,6 +10,7 @@ Skill 分类管理器 — 本地 Web 服务端
 """
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -224,6 +225,7 @@ def _scan():
 
 
 def _assign(data):
+    global _cat_order
     d = data.get("dir")
     cat = data.get("category") or ""
     if d not in _skills:
@@ -243,6 +245,7 @@ def _assign(data):
 
 
 def _newcat(data):
+    global _cat_order
     name = (data.get("name") or "").strip()
     if not name:
         return {"error": "名称为空"}
@@ -256,6 +259,7 @@ def _newcat(data):
 
 def _delcat(data):
     """删除分类：将其中的 skill 移回「未分类」，并删除该分类本身。"""
+    global _cat_order
     cat = (data.get("category") or "").strip()
     if not cat:
         return {"error": "分类为空"}
@@ -270,18 +274,18 @@ def _delcat(data):
 
 # ---------- AI 智能分类 ----------
 
-def _read_ccswitch_ai_config():
-    """从 cc-switch 数据库读取已配置的 AI 接口（优先 OpenAI 兼容，其次 Anthropic 兼容）。
+def _read_all_ai_configs():
+    """从 cc-switch 数据库读取所有已配置 API Key 的 AI 接口。
 
-    返回 {"base_url":..., "api_key":..., "model":..., "auth_style": "openai"|"anthropic",
-          "models": [可选模型名列表]}
-    或 None（未找到可用配置）。
+    返回列表，每项为 {"id", "name", "base_url", "api_key", "model",
+                      "auth_style": "openai"|"anthropic", "models": [...], "is_current": bool}
+    排序：当前启用的 provider 优先，其余按名称排序。
     """
     try:
         con = sqlite3.connect(db_path(), timeout=10)
         con.row_factory = sqlite3.Row
         rows = con.execute(
-            "SELECT id, app_type, settings_config, is_current FROM providers").fetchall()
+            "SELECT id, app_type, name, settings_config, meta, is_current FROM providers").fetchall()
         # 读取 provider_endpoints 表里的实际端点 URL，按 provider_id 关联（优先于硬编码兜底）
         endpoints = {}
         try:
@@ -291,10 +295,9 @@ def _read_ccswitch_ai_config():
             pass
         con.close()
     except Exception:
-        return None
+        return []
 
-    # 候选顺序：优先 OpenAI 兼容（codex），其次 Anthropic 兼容（claude-desktop）
-    openai_cfg, anthropic_cfg = None, None
+    configs = []
     for r in rows:
         try:
             sc = json.loads(r["settings_config"]) if r["settings_config"] else {}
@@ -302,42 +305,89 @@ def _read_ccswitch_ai_config():
             sc = {}
         # 按 provider_id 精确取该 provider 记录的实际 URL
         endpoint_url = endpoints.get(r["id"]) or None
+        cfg = None
         if r["app_type"] == "codex" and sc.get("auth", {}).get("OPENAI_API_KEY"):
-            base = None
-            model = "deepseek-chat"
-            cfg = sc.get("config", "") or ""
+            base, model = None, ""
             # 尝试从 config 里解析 model / base_url
-            for line in cfg.splitlines():
+            for line in (sc.get("config", "") or "").splitlines():
                 line = line.strip()
                 if line.startswith("model =") and '"' in line:
                     model = line.split('"', 2)[1]
                 elif line.startswith("base_url =") and '"' in line:
                     base = line.split('"', 2)[1]
-            # 兜底优先级：config 里的 base_url > provider_endpoints 的实际 URL > 默认 DeepSeek
-            base = base or endpoint_url or "https://api.deepseek.com"
+            # 兜底优先级：config 里的 base_url > provider_endpoints 的实际 URL
+            base = base or endpoint_url or ""
+            if not base:
+                continue
             # 从 modelCatalog 提取可用模型列表
             models = []
             for m in (sc.get("modelCatalog", {}).get("models") or []):
                 if isinstance(m, dict) and m.get("model"):
                     models.append(m["model"])
-            if not models:
-                models = [model]
-            if not openai_cfg:
-                openai_cfg = {"base_url": base.rstrip("/"), "api_key": sc["auth"]["OPENAI_API_KEY"],
-                              "model": model, "auth_style": "openai", "models": models}
+            if model and model not in models:
+                models.insert(0, model)
+            cfg = {"base_url": base.rstrip("/"), "api_key": sc["auth"]["OPENAI_API_KEY"],
+                   "model": model, "auth_style": "openai", "models": models}
         elif r["app_type"] == "claude-desktop" and sc.get("env", {}).get("ANTHROPIC_AUTH_TOKEN"):
-            base = sc["env"].get("ANTHROPIC_BASE_URL") or endpoint_url or "https://api.deepseek.com/anthropic"
-            if not anthropic_cfg:
-                anthropic_cfg = {"base_url": base.rstrip("/"), "api_key": sc["env"]["ANTHROPIC_AUTH_TOKEN"],
-                                 "model": "deepseek-chat", "auth_style": "anthropic",
-                                 "models": ["deepseek-chat"]}
-    return openai_cfg or anthropic_cfg
+            base = sc["env"].get("ANTHROPIC_BASE_URL") or endpoint_url or ""
+            if not base:
+                continue
+            # claude-desktop 的模型映射存在 meta.claudeDesktopModelRoutes：
+            # {"路由名": {"model": "实际上游模型", "labelOverride": "显示名"}}
+            models, model_labels = [], {}
+            try:
+                meta = json.loads(r["meta"]) if r["meta"] else {}
+            except Exception:
+                meta = {}
+            routes = meta.get("claudeDesktopModelRoutes") or {}
+            for route in routes.values():
+                if isinstance(route, dict) and route.get("model"):
+                    m = route["model"]
+                    if m not in models:
+                        models.append(m)
+                    label = (route.get("labelOverride") or "").strip()
+                    if label:
+                        model_labels[m] = label
+            # 兜底：env 里的 ANTHROPIC_MODEL / ANTHROPIC_SMALL_FAST_MODEL
+            for k in ("ANTHROPIC_MODEL", "ANTHROPIC_SMALL_FAST_MODEL"):
+                v = (sc["env"].get(k) or "").strip()
+                if v and v not in models:
+                    models.append(v)
+            cfg = {"base_url": base.rstrip("/"), "api_key": sc["env"]["ANTHROPIC_AUTH_TOKEN"],
+                   "model": "", "auth_style": "anthropic", "models": models,
+                   "model_labels": model_labels}
+        if cfg:
+            cfg.update({"id": r["id"], "name": (r["name"] or r["id"]).strip(),
+                        "is_current": bool(r["is_current"])})
+            if not cfg["model"]:
+                cfg["model"] = cfg["models"][0] if cfg["models"] else "deepseek-chat"
+            if not cfg["models"]:
+                cfg["models"] = [cfg["model"]]
+            configs.append(cfg)
+    # 当前启用的 provider 排最前，其余按名称排序
+    configs.sort(key=lambda c: (not c["is_current"], c["name"].lower()))
+    return configs
+
+
+def _read_ccswitch_ai_config():
+    """兼容旧调用：返回默认（第一个）AI 接口配置，或 None。"""
+    configs = _read_all_ai_configs()
+    return configs[0] if configs else None
+
+
+def _api_url(base, path):
+    """拼接 API URL：若 base_url 已以版本段结尾（如 /v1、/paas/v4），
+    则直接拼接路径，不再重复添加 /v1 前缀。"""
+    base = base.rstrip("/")
+    if re.search(r"/v\d+[a-z0-9]*$", base):
+        return f"{base}/{path}"
+    return f"{base}/v1/{path}"
 
 
 def _call_llm(cfg, system, user):
     """调用大模型，返回纯文本回复；失败抛异常。"""
     if cfg["auth_style"] == "anthropic":
-        url = cfg["base_url"].rstrip("/") + "/v1/messages"
+        url = _api_url(cfg["base_url"], "messages")
         body = {
             "model": cfg["model"],
             "max_tokens": 4096,
@@ -348,7 +398,7 @@ def _call_llm(cfg, system, user):
                    "x-api-key": cfg["api_key"],
                    "anthropic-version": "2023-06-01"}
     else:
-        url = cfg["base_url"].rstrip("/") + "/v1/chat/completions"
+        url = _api_url(cfg["base_url"], "chat/completions")
         body = {
             "model": cfg["model"],
             "messages": [
@@ -379,55 +429,69 @@ def _ai_classify(data):
       category    : scope="current" 时的单个分类名
       categories  : scope="selected" 时的分类名列表（多选）
       model       : 指定模型名（可空，缺省用配置里的默认模型）
+      provider    : 指定接口的 provider id（可空，缺省用第一个可用接口）
+
+    锁策略：本函数由 do_POST 在不持全局锁的情况下调用（LLM 网络 I/O 最长 120s，
+    持锁会阻塞所有其他请求）。共享状态（_skills/_cats/_ai_plan）的读写均在
+    局部临界区内完成：先快照输入，网络调用后再校验并写回方案。
     """
-    global _cats, _cat_order, _ai_plan
+    global _ai_plan
     instruction = (data.get("instruction") or "").strip()
     scope = data.get("scope") or "uncategorized"
     model = (data.get("model") or "").strip()
+    provider_id = (data.get("provider") or "").strip()
 
-    cfg = _read_ccswitch_ai_config()
-    if not cfg:
+    # 读取 cc-switch 配置使用独立 sqlite 连接，不涉及共享状态，无需加锁
+    configs = _read_all_ai_configs()
+    if not configs:
         return {"error": "未在 cc-switch 中找到可用的 AI 接口配置。请先在 cc-switch 里配置一个 OpenAI/Anthropic 兼容的 Provider（如 DeepSeek）。"}
 
-    # 指定模型（若在可用列表内）
-    if model and model in cfg.get("models", []):
+    cfg = next((c for c in configs if c["id"] == provider_id), None) if provider_id else None
+    if provider_id and not cfg:
+        return {"error": "所选接口不存在或已失效，请刷新接口列表后重试。"}
+    cfg = cfg or configs[0]
+
+    # 指定模型（允许任意非空模型名：模型列表可能已被「刷新模型列表」扩展）
+    if model:
         cfg["model"] = model
 
-    # 确定待分类范围
-    if scope == "all":
-        targets = sorted(_skills)
-    elif scope == "uncategorized":
-        targets = [d for d in sorted(_skills) if cat_of(d) is None]
-    elif scope == "current":
-        cat = (data.get("category") or "").strip()
-        targets = [d for d in (_cats.get(cat) or []) if d in _skills]
-    elif scope == "selected":
-        cats = data.get("categories") or []
-        if not isinstance(cats, list):
-            return {"error": "categories 参数应为列表"}
-        targets = []
-        for c in cats:
-            for d in (_cats.get(c) or []):
-                if d in _skills and d not in targets:
-                    targets.append(d)
-        targets.sort()
-    elif scope in _cats:
-        targets = [d for d in _cats[scope] if d in _skills]
-    else:
-        return {"error": "无效的分类范围"}
+    # ---- 临界区 1：快照分类范围、skill 清单与现有分类 ----
+    with _lock:
+        # 确定待分类范围
+        if scope == "all":
+            targets = sorted(_skills)
+        elif scope == "uncategorized":
+            targets = [d for d in sorted(_skills) if cat_of(d) is None]
+        elif scope == "current":
+            cat = (data.get("category") or "").strip()
+            targets = [d for d in (_cats.get(cat) or []) if d in _skills]
+        elif scope == "selected":
+            cats = data.get("categories") or []
+            if not isinstance(cats, list):
+                return {"error": "categories 参数应为列表"}
+            targets = []
+            for c in cats:
+                for d in (_cats.get(c) or []):
+                    if d in _skills and d not in targets:
+                        targets.append(d)
+            targets.sort()
+        elif scope in _cats:
+            targets = [d for d in _cats[scope] if d in _skills]
+        else:
+            return {"error": "无效的分类范围"}
 
-    if not targets:
-        return {"error": "该范围内没有可分类的 skill"}
+        if not targets:
+            return {"error": "该范围内没有可分类的 skill"}
 
-    # 构建 skill 清单（目录名 + 描述）
-    skill_desc = []
-    for d in targets:
-        s = _skills[d]
-        desc = (s.get("desc") or "").strip()
-        skill_desc.append(f"- {d}" + (f"：{desc}" if desc else ""))
-    skill_text = "\n".join(skill_desc)
+        # 构建 skill 清单（目录名 + 描述）
+        skill_desc = []
+        for d in targets:
+            s = _skills[d]
+            desc = (s.get("desc") or "").strip()
+            skill_desc.append(f"- {d}" + (f"：{desc}" if desc else ""))
+        skill_text = "\n".join(skill_desc)
 
-    existing_cats = "\n".join(_cat_order) if _cat_order else "（当前还没有任何分类）"
+        existing_cats = "\n".join(_cat_order) if _cat_order else "（当前还没有任何分类）"
 
     system = (
         "你是半导体/科研工作流的 skill 分类助手。请把给定的 skill（每个是一行「目录名：描述」）"
@@ -445,6 +509,7 @@ def _ai_classify(data):
         "把所有 skill 都归入某个分类，不要输出任何 JSON 以外的文字、解释或代码块标记。"
     )
 
+    # ---- 网络 I/O：不持锁，期间其他请求可正常处理 ----
     try:
         raw = _call_llm(cfg, system, user)
     except Exception as e:
@@ -465,36 +530,38 @@ def _ai_classify(data):
     if not isinstance(result, dict):
         return {"error": "大模型返回格式不正确（应为对象）", "raw": raw}
 
-    # 生成预览方案（dir -> 目标分类），不写入数据
-    plan = {}
-    created = []
-    for cat, dirs in result.items():
-        cat = (cat or "").strip()
-        if not cat:
-            continue
-        if cat not in _cats:
-            created.append(cat)
-        if not isinstance(dirs, list):
-            continue
-        for d in dirs:
-            if d not in _skills:
+    # ---- 临界区 2：按当前最新状态校验结果并缓存方案 ----
+    with _lock:
+        # 生成预览方案（dir -> 目标分类），不写入数据
+        plan = {}
+        created = []
+        for cat, dirs in result.items():
+            cat = (cat or "").strip()
+            if not cat:
                 continue
-            plan[d] = cat
+            if cat not in _cats:
+                created.append(cat)
+            if not isinstance(dirs, list):
+                continue
+            for d in dirs:
+                if d not in _skills:
+                    continue
+                plan[d] = cat
 
-    if not plan:
-        return {"error": "大模型未返回任何可用的归类结果", "raw": raw}
+        if not plan:
+            return {"error": "大模型未返回任何可用的归类结果", "raw": raw}
 
-    # 缓存方案（含新建分类清单），等待用户确认
-    _ai_plan = {"plan": plan, "created": created, "scope": scope, "model": cfg["model"]}
+        # 缓存方案（含新建分类清单），等待用户确认
+        _ai_plan = {"plan": plan, "created": created, "scope": scope, "model": cfg["model"]}
 
-    return {
-        "preview": [{"dir": d, "name": _skills[d]["name"], "to": plan[d],
-                     "from": cat_of(d)} for d in targets if d in plan],
-        "created_categories": created,
-        "applied": len(plan),
-        "model": cfg["model"],
-        "scope": scope,
-    }
+        return {
+            "preview": [{"dir": d, "name": _skills[d]["name"], "to": plan[d],
+                         "from": cat_of(d)} for d in targets if d in plan],
+            "created_categories": created,
+            "applied": len(plan),
+            "model": cfg["model"],
+            "scope": scope,
+        }
 
 
 def _ai_apply(data):
@@ -534,12 +601,66 @@ def _ai_apply(data):
 
 
 def _ai_config_info():
-    """返回当前可用的 AI 接口信息（脱敏），供前端展示。"""
+    """返回默认 AI 接口信息（脱敏），兼容旧前端。"""
     cfg = _read_ccswitch_ai_config()
     if not cfg:
         return {"available": False}
     return {"available": True, "model": cfg["model"], "models": cfg.get("models", [cfg["model"]]),
             "auth_style": cfg["auth_style"], "base_url": cfg["base_url"]}
+
+
+def _ai_providers_info():
+    """返回所有已配置 API Key 的 AI 接口列表（脱敏），供前端下拉选择。"""
+    configs = _read_all_ai_configs()
+    return {"available": bool(configs),
+            "providers": [{"id": c["id"], "name": c["name"], "auth_style": c["auth_style"],
+                           "base_url": c["base_url"], "model": c["model"],
+                           "models": c.get("models", []),
+                           "model_labels": c.get("model_labels", {}),
+                           "is_current": c["is_current"]}
+                          for c in configs]}
+
+
+def _ai_fetch_models(data):
+    """实时从所选接口拉取模型列表（GET /v1/models），成功返回最新列表。
+
+    入参：provider — provider id。
+    失败时返回 error，前端可继续使用该接口已有的模型列表。
+    """
+    provider_id = (data.get("provider") or "").strip()
+    cfg = next((c for c in _read_all_ai_configs() if c["id"] == provider_id), None)
+    if not cfg:
+        return {"error": "所选接口不存在，请刷新接口列表后重试。"}
+
+    url = _api_url(cfg["base_url"], "models")
+    if cfg["auth_style"] == "anthropic":
+        headers = {"x-api-key": cfg["api_key"], "anthropic-version": "2023-06-01"}
+    else:
+        headers = {"Authorization": f"Bearer {cfg['api_key']}"}
+
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        return {"error": f"拉取模型列表失败：HTTP {e.code}（该接口可能不支持 /v1/models，可继续使用已有列表）"}
+    except Exception as e:
+        return {"error": f"拉取模型列表失败：{e}"}
+
+    models = []
+    for m in (payload.get("data") or []):
+        if isinstance(m, dict):
+            mid = m.get("id") or m.get("model")
+            if mid:
+                models.append(mid)
+        elif isinstance(m, str):
+            models.append(m)
+    if not models:
+        return {"error": "接口返回的模型列表为空"}
+    # 保证当前默认模型仍在列表中
+    if cfg["model"] and cfg["model"] not in models:
+        models.insert(0, cfg["model"])
+    return {"models": models, "model": cfg["model"], "count": len(models)}
 
 
 def _start_apply():
@@ -661,13 +782,23 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(apply_status())
             elif path == "/api/ai_config":
                 self._json(_ai_config_info())
+            elif path == "/api/ai_providers":
+                self._json(_ai_providers_info())
             else:
                 self._serve_file(path)
 
     def do_POST(self):
         path = urlparse(self.path).path
+        data = self._read_json()
+        # 网络 I/O 类接口不持有全局锁（LLM 调用最长 120s），避免阻塞其他请求；
+        # 这两个函数内部自行按需加锁访问共享状态
+        if path == "/api/ai_classify":
+            self._json(_ai_classify(data))
+            return
+        if path == "/api/ai_models":
+            self._json(_ai_fetch_models(data))
+            return
         with _lock:
-            data = self._read_json()
             handlers = {
                 "/api/toggle_skill": lambda: _toggle_skill(data),
                 "/api/toggle_category": lambda: _toggle_category(data),
@@ -677,7 +808,6 @@ class Handler(BaseHTTPRequestHandler):
                 "/api/assign": lambda: _assign(data),
                 "/api/newcat": lambda: _newcat(data),
                 "/api/delcat": lambda: _delcat(data),
-                "/api/ai_classify": lambda: _ai_classify(data),
                 "/api/ai_apply": lambda: _ai_apply(data),
                 "/api/apply": _start_apply,
             }

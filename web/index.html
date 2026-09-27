@@ -80,8 +80,16 @@
         <div class="ai-config" id="ai-config"></div>
         <div class="ai-row">
           <div class="ai-col">
+            <label class="ai-label">API 接口（来自 cc-switch）</label>
+            <select id="ai-provider" class="ai-model"></select>
+          </div>
+          <div class="ai-col">
             <label class="ai-label">模型</label>
-            <select id="ai-model" class="ai-model"></select>
+            <div class="ai-model-row">
+              <select id="ai-model" class="ai-model"></select>
+              <button id="ai-refresh-models" class="btn btn-ghost ai-refresh"
+                title="从所选接口实时拉取最新模型列表">🔄</button>
+            </div>
           </div>
         </div>
         <label class="ai-label">分类范围</label>

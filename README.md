@@ -39,7 +39,7 @@ Skill 分类管理器是一个本地运行的**零第三方依赖**工具，用�
 - **7 个 AI Agent 独立开关**：每个 skill 可分别控制在 Claude Code、Codex、Gemini CLI、Grok Build、OpenCode、Hermes、MiniMax Code 中的启用状态。
 - **分类 × Agent 一键开关**：侧栏每个分类卡片内嵌 7 个 Agent 圆点开关，右侧分类内还有一整排整类开关，一键控制该分类下所有 skill。
 - **按工作流分类**：将 skill 按科研流程（文献、实验、绘图、写作、汇报、开发）分组，支持自定义类别。
-- **✨ AI 智能分类**：复用 cc-switch 中已配置的大模型（如 DeepSeek），一键对 skill 自动分类；支持模型切换与精确到多个分类的范围选择，**先预览、确认后才写入**。
+- **✨ AI 智能分类**：复用 cc-switch 中已配置的大模型（如 DeepSeek），一键对 skill 自动分类；支持**多 API 接口下拉切换**、**模型列表一键实时刷新**与精确到多个分类的范围选择，**先预览、确认后才写入**。
 - **扫描更新**：一键重读 cc-switch 数据库，自动发现新安装、尚未归类的 skill。
 - **未分类集中管理**：新 skill 自动归入「未分类」分组，方便批量归类。
 - **自由归类**：可新建、删除、重命名分类，任意 skill 可重新归入其它类别（归属即时保存）。
@@ -133,22 +133,26 @@ python skill_manager.py list
 ### 使用方式
 
 1. 点顶栏 **「✨ AI 智能分类」**。
-2. 选择**模型**（自动读取 cc-switch 中配置的可用模型，如 `deepseek-flash` / `deepseek-v4-pro`）。
-3. 选择**分类范围**：
+2. 选择 **API 接口**：下拉框列出 cc-switch 中**所有**已配置 API Key 的 Provider（OpenAI 兼容 / Anthropic 兼容均可），当前在 cc-switch 中启用的接口默认选中并排在最前。
+3. 选择**模型**：自动读取所选接口的可用模型——OpenAI 兼容接口读 `modelCatalog`，Anthropic 兼容接口读 cc-switch 的模型路由映射（显示为「别名（实际模型）」）。点模型框旁的 **🔄** 可从接口**实时拉取最新模型列表**（调用 `/v1/models`）。
+4. 选择**分类范围**：
    - 仅「未分类」：只处理尚未归类的 skill（默认）。
    - 全部 skill：全部重新分类。
    - 当前分类：当前侧栏选中的那一个分类。
    - 指定分类：**多选**，精确勾选任意几个分类。
-4. （可选）填写一行「想怎么分」的分类意图。
-5. 点「开始分类」，大模型返回分类方案后，界面会展示 **Skill / 原分类 / 新分类** 的预览表格。
-6. 核对无误后点 **「确认应用」**，方案才会真正写入 `categories.json`。
+5. （可选）填写一行「想怎么分」的分类意图。
+6. 点「开始分类」，大模型返回分类方案后，界面会展示 **Skill / 原分类 / 新分类** 的预览表格。
+7. 核对无误后点 **「确认应用」**，方案才会真正写入 `categories.json`。
 
 > **安全设计**：AI 分类采用「两段式」流程——生成方案时**只读不写**，必须等你点「确认应用」后才落地，确保数据在你确认前零改动。
 
 ### 工作原理
 
-- 从 cc-switch 数据库的 `providers` 表读取已配置的 Provider（API Key / Base URL / 模型），凭据直接复用，不另存、不展示明文。
-- 优先使用 OpenAI 兼容接口，其次 Anthropic 兼容接口。
+- 从 cc-switch 数据库的 `providers` 表读取**全部**已配置 API Key 的 Provider（API Key / Base URL / 模型），凭据直接复用，不另存、不展示明文。
+- OpenAI 兼容接口（codex 类型）：模型列表取自 `settings_config.modelCatalog`；Anthropic 兼容接口（claude-desktop 类型）：模型列表取自 `providers.meta` 的 `claudeDesktopModelRoutes` 路由映射（`labelOverride` 作显示别名）。
+- 「🔄 刷新模型列表」调用所选接口的 `GET /v1/models` 实时拉取（Anthropic 风格自动使用 `x-api-key` 鉴权）；接口不支持该端点时保留原列表并提示。
+- base_url 自带版本路径（如 `/v1`、`/paas/v4`）时自动避免重复拼接 `/v1`。
+- AI 调用期间**不持有服务全局锁**：分类运行的同时，开关操作、进度轮询等其他请求照常响应。
 - 分类方案以 JSON 形式返回并解析，新分类会自动创建，skill 自动归入。
 
 ## 命令行使用
@@ -208,6 +212,7 @@ python skill_manager.py newcat 07_其他     # 新建空分类
 | `ccswitch_paths.py` | 路径自动探测模块（数据库 / SSOT / 各 Agent 目录） |
 | `skill_manager.py` | 命令行版 |
 | `categories.json` | 分类映射表（界面或 CLI 均可修改） |
+| `CHANGELOG.md` | 版本更新说明 |
 | `LICENSE` | MIT 开源许可证 |
 | `README.md` | 本说明文档 |
 

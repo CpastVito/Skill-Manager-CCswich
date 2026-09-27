@@ -342,6 +342,11 @@ html, body {
   cursor: pointer;
 }
 .ai-model:focus { outline: none; border-color: var(--accent); }
+.ai-model-row { display: flex; gap: 6px; }
+.ai-model-row .ai-model { flex: 1; min-width: 0; }
+.ai-refresh { flex: none; padding: 6px 10px; line-height: 1; }
+.ai-refresh.spin { animation: ai-spin 0.8s linear infinite; }
+@keyframes ai-spin { to { transform: rotate(360deg); } }
 .ai-cat-picker {
   display: flex;
   flex-wrap: wrap;

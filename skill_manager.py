@@ -58,8 +58,13 @@ def load_categories():
 
 
 def save_categories(cats):
-    with open(CAT_FILE, "w", encoding="utf-8") as f:
+    """原子写入：先写临时文件再 os.replace，避免中途中断损坏 categories.json。"""
+    tmp = CAT_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(cats, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, CAT_FILE)
 
 
 def load_skills(con):
@@ -146,17 +151,21 @@ def cmd_list(cats, skills):
     labels = [a.get("short", a["label"]) for a in AGENTS]
     print(f"{'分类':<36} {'数量':>4} " + " ".join(f"{l:>8}" for l in labels))
     print("-" * (36 + 4 + 1 + 9 * len(AGENTS)))
-    totals = {k: 0 for k in AGENT_KEYS}
+    seen = set()
     for cat, dirs in cats.items():
         have = [d for d in dirs if d in skills]
+        seen.update(have)
         cells = [f"{sum(skills[d][k] for d in have):>8}" for k in AGENT_KEYS]
-        for k in AGENT_KEYS:
-            totals[k] += sum(skills[d][k] for d in have)
         print(f"{cat:<36} {len(have):>4} " + " ".join(cells))
+    # 未分类单独成行，避免合计行口径不一致
+    uncat = [d for d in skills if d not in seen]
+    if uncat:
+        cells = [f"{sum(skills[d][k] for d in uncat):>8}" for k in AGENT_KEYS]
+        print(f"{'◆ 未分类':<36} {len(uncat):>4} " + " ".join(cells))
     print("-" * (36 + 4 + 1 + 9 * len(AGENTS)))
-    n = len(skills)
-    cells = [f"{totals[k]:>8}" for k in AGENT_KEYS]
-    print(f"{'合计':<36} {n:>4} " + " ".join(cells))
+    # 合计按全库 skill 去重统计（即使某 skill 被重复归入多个分类也不会虚增）
+    cells = [f"{sum(skills[d][k] for d in skills):>8}" for k in AGENT_KEYS]
+    print(f"{'合计':<36} {len(skills):>4} " + " ".join(cells))
 
 
 def cmd_status(cat_key, cats, skills):

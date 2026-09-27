@@ -312,6 +312,8 @@ function bindToolbar() {
   $('ai-cancel').onclick = closeAiModal;
   $('ai-run').onclick = runAiClassify;
   $('ai-apply').onclick = applyAiResult;
+  $('ai-refresh-models').onclick = refreshAiModels;
+  $('ai-provider').onchange = () => { renderAiConfigBox(); fillAiModelSelect(currentProvider()); };
   $('ai-modal').addEventListener('click', (e) => { if (e.target === $('ai-modal')) closeAiModal(); });
   document.querySelectorAll('input[name="ai-scope"]').forEach((inp) => {
     inp.addEventListener('change', updateAiScope);
@@ -331,6 +333,65 @@ function bindToolbar() {
 // ---------- AI 智能分类 ----------
 
 let aiResultPayload = null;
+let aiProviders = [];
+
+function currentProvider() {
+  const id = $('ai-provider').value;
+  return aiProviders.find((p) => p.id === id) || null;
+}
+
+function renderAiConfigBox() {
+  const box = $('ai-config');
+  const p = currentProvider();
+  if (p) {
+    box.innerHTML = `<div class="ai-config-ok">当前接口：<b>${esc(p.name)}</b>（${esc(p.auth_style)} · ${esc(p.base_url)}）</div>`;
+  } else {
+    box.innerHTML = `<div class="ai-config-err">⚠️ 未在 cc-switch 中找到已配置 API Key 的接口。请先在 cc-switch 添加一个 OpenAI/Anthropic 兼容的 Provider（如 DeepSeek）。</div>`;
+  }
+}
+
+function fillAiProviderSelect() {
+  const sel = $('ai-provider');
+  sel.innerHTML = '';
+  for (const p of aiProviders) {
+    const opt = document.createElement('option');
+    opt.value = p.id;
+    opt.textContent = `${p.name}（${p.auth_style}）`;
+    if (p.is_current) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+function fillAiModelSelect(p) {
+  const modelSel = $('ai-model');
+  modelSel.innerHTML = '';
+  if (!p) return;
+  const models = (p.models && p.models.length) ? p.models : [p.model];
+  const labels = p.model_labels || {};
+  for (const m of models) {
+    const opt = document.createElement('option');
+    opt.value = m;
+    opt.textContent = labels[m] ? `${labels[m]}（${m}）` : m;
+    if (m === p.model) opt.selected = true;
+    modelSel.appendChild(opt);
+  }
+}
+
+async function refreshAiModels() {
+  const p = currentProvider();
+  if (!p) { toast('请先选择一个 API 接口', 'error'); return; }
+  const btn = $('ai-refresh-models');
+  btn.disabled = true;
+  btn.classList.add('spin');
+  const r = await api('/api/ai_models', { provider: p.id });
+  btn.disabled = false;
+  btn.classList.remove('spin');
+  if (r.error) { toast(r.error, 'error'); return; }
+  p.models = r.models;
+  if (r.model) p.model = r.model;
+  fillAiModelSelect(p);
+  toast(`已刷新模型列表：共 ${r.count || r.models.length} 个模型`, 'success');
+}
 
 async function openAiModal() {
   $('ai-modal').classList.remove('hidden');
@@ -339,24 +400,15 @@ async function openAiModal() {
   $('ai-instruction').value = '';
   aiResultPayload = null;
 
-  // 显示当前可用的 AI 接口信息，并填充模型下拉
-  const cfg = await api('/api/ai_config');
-  const box = $('ai-config');
-  const modelSel = $('ai-model');
-  modelSel.innerHTML = '';
-  if (cfg.available) {
-    box.innerHTML = `<div class="ai-config-ok">已检测到 AI 接口：<b>${esc(cfg.model)}</b>（${esc(cfg.auth_style)} · ${esc(cfg.base_url)}）</div>`;
-    const models = cfg.models || [cfg.model];
-    for (const m of models) {
-      const opt = document.createElement('option');
-      opt.value = m;
-      opt.textContent = m;
-      if (m === cfg.model) opt.selected = true;
-      modelSel.appendChild(opt);
-    }
-  } else {
-    box.innerHTML = `<div class="ai-config-err">⚠️ 未在 cc-switch 中找到可用的 AI 接口。请先在 cc-switch 配置一个 OpenAI/Anthropic 兼容的 Provider（如 DeepSeek）。</div>`;
+  // 拉取 cc-switch 中所有已配置 API Key 的接口，填充接口与模型下拉
+  const r = await api('/api/ai_providers');
+  if (r && r.error) {
+    $('ai-config').innerHTML = `<div class="ai-config-err">⚠️ ${esc(r.error)}</div>`;
   }
+  aiProviders = (r && r.providers) || [];
+  fillAiProviderSelect();
+  renderAiConfigBox();
+  fillAiModelSelect(currentProvider());
 
   // 填充分类多选框（用于「指定分类」）
   const picker = $('ai-cat-picker');
@@ -402,8 +454,16 @@ async function runAiClassify() {
   resultBox.innerHTML = '<div class="ai-loading">正在调用大模型分析 skill…</div>';
   $('ai-apply').classList.add('hidden');
 
-  const body = { scope, instruction, model };
-  if (scope === 'current') body.category = selected;
+  const body = { scope, instruction, model, provider: $('ai-provider').value };
+  if (scope === 'current') {
+    if (!selected || selected === '◆ 未分类') {
+      resultBox.innerHTML = '<div class="ai-error">请先在左侧选择一个具体分类（「当前分类」不支持未分类）</div>';
+      btn.disabled = false;
+      btn.textContent = '开始分类';
+      return;
+    }
+    body.category = selected;
+  }
   if (scope === 'selected') {
     const cats = aiSelectedCats();
     if (!cats.length) {
